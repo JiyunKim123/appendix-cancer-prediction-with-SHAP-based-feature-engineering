@@ -1,0 +1,126 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from imblearn.over_sampling import SMOTE
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from xgboost import XGBClassifier
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score,
+    f1_score, roc_auc_score, confusion_matrix
+)
+import shap
+
+# 데이터 로드
+file_path = "/content/drive/My Drive/Colab Notebooks/appendix_cancer dataset/appendix_cancer_prediction_dataset.csv"
+df = pd.read_csv(file_path)
+
+# 데이터 전처리 (결측값 처리)
+df = df.dropna()
+
+# 범주형 변수 Label Encoding 적용
+label_encoders = {}
+categorical_cols = df.select_dtypes(include=['object']).columns
+for col in categorical_cols:
+    le = LabelEncoder()
+    df[col] = le.fit_transform(df[col])
+    label_encoders[col] = le
+
+# Feature Selection - 상관관계 높은 변수 선택
+target_variable = 'Appendix_Cancer_Prediction'
+X = df.drop(columns=[target_variable])
+y = df[target_variable]
+
+# 데이터 불균형 확인
+print("Class Distribution Before SMOTE:")
+print(y.value_counts())
+
+# 데이터 분할
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+# 데이터 증강 (SMOTE 적용)
+smote = SMOTE(random_state=42)
+X_train_resampled, y_train_resampled = smote.fit_resample(X_train, y_train)
+
+# 스케일링 적용 (선택 사항)
+scaler = StandardScaler()
+X_train_resampled = scaler.fit_transform(X_train_resampled)
+X_test = scaler.transform(X_test)
+
+# 데이터 불균형 확인 (SMOTE 적용 후)
+print("\nClass Distribution After SMOTE:")
+print(pd.Series(y_train_resampled).value_counts())
+
+# XGBoost 모델 하이퍼파라미터 튜닝
+param_grid = {
+    'max_depth': [3, 5, 7, 10],
+    'n_estimators': [100, 200, 300, 400, 500]
+}
+
+xgb_model = XGBClassifier(
+    learning_rate=0.1,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    gamma=0.1,
+    reg_lambda=1,
+    random_state=42,
+    use_label_encoder=False,
+    eval_metric='logloss'
+)
+
+grid_search = GridSearchCV(xgb_model, param_grid, cv=3, scoring='accuracy', n_jobs=-1)
+grid_search.fit(X_train_resampled, y_train_resampled)
+
+# 최적 하이퍼파라미터 출력
+best_params = grid_search.best_params_
+print(f"Best max_depth: {best_params['max_depth']}")
+print(f"Best n_estimators: {best_params['n_estimators']}")
+
+# 최적 하이퍼파라미터로 모델 학습
+xgb_best_model = XGBClassifier(
+    max_depth=best_params['max_depth'],
+    n_estimators=best_params['n_estimators'],
+    learning_rate=0.1,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    gamma=0.1,
+    reg_lambda=1,
+    random_state=42,
+    use_label_encoder=False,
+    eval_metric='logloss'
+)
+xgb_best_model.fit(X_train_resampled, y_train_resampled)
+y_pred_xgb = xgb_best_model.predict(X_test)
+
+# 성능 평가 함수
+def evaluate_model(y_test, y_pred, model_name):
+    acc = accuracy_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred)
+    recall = recall_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred)
+    roc_auc = roc_auc_score(y_test, y_pred)
+
+    print(f"\n{model_name} Metrics:")
+    print(f"  Accuracy: {acc:.4f}")
+    print(f"  Precision: {precision:.4f}")
+    print(f"  Recall: {recall:.4f}")
+    print(f"  F1-score: {f1:.4f}")
+    print(f"  ROC-AUC: {roc_auc:.4f}")
+
+# 최적 모델 평가
+evaluate_model(y_test, y_pred_xgb, "XGBoost (Tuned)")
+
+# Confusion Matrix 시각화
+plt.figure(figsize=(6, 5))
+sns.heatmap(confusion_matrix(y_test, y_pred_xgb), annot=True, fmt='d', cmap='Blues')
+plt.xlabel('Predicted Label')
+plt.ylabel('True Label')
+plt.title('Confusion Matrix')
+plt.show()
+
+# SHAP 분석 (특성 중요도 시각화)
+explainer = shap.Explainer(xgb_best_model)
+shap_values = explainer(X_test)
+
+shap.summary_plot(shap_values, X_test)

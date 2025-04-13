@@ -1,0 +1,136 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import shap
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import LabelEncoder
+from imblearn.over_sampling import SMOTE
+import lightgbm as lgb
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+# 파일 경로
+file_path = "/content/drive/My Drive/Colab Notebooks/appendix_cancer dataset/appendix_cancer_prediction_dataset.csv"
+
+# 데이터 로드
+df = pd.read_csv(file_path)
+
+# 불필요한 열 제거
+df.drop(columns=['Patient_ID'], inplace=True)
+
+# 레이블 인코딩 (범주형 변수 변환)
+label_encoders = {}
+for col in df.select_dtypes(include=['object']).columns:
+    le = LabelEncoder()
+    df[col] = le.fit_transform(df[col])
+    label_encoders[col] = le  # 나중에 해석을 위해 저장
+
+# 특성과 타겟 분리
+X = df.drop(columns=['Appendix_Cancer_Prediction'])
+y = df['Appendix_Cancer_Prediction']
+
+# 데이터 불균형 해소 (SMOTE 적용)
+smote = SMOTE(random_state=42)
+X_resampled, y_resampled = smote.fit_resample(X, y)
+
+# 학습/테스트 데이터 분할
+X_train, X_test, y_train, y_test = train_test_split(X_resampled, y_resampled, test_size=0.2, random_state=42, stratify=y_resampled)
+
+# 최적 max_depth 찾기
+best_depth = -1
+best_score = 0
+for depth in [3, 5, 7, 10, 15, 20, -1]:
+    temp_model = lgb.LGBMClassifier(objective='binary', metric='binary_error', boosting_type='gbdt', max_depth=depth, seed=42)
+    scores = cross_val_score(temp_model, X_train, y_train, cv=3, scoring='accuracy')
+    mean_score = scores.mean()
+    print(f"max_depth={depth}, Accuracy={mean_score:.4f}")
+    if mean_score > best_score:
+        best_score = mean_score
+        best_depth = depth
+
+print(f"\nOptimal max_depth: {best_depth}")
+
+# 최적 max_depth로 모델 학습
+optimal_model = lgb.LGBMClassifier(objective='binary', metric='binary_error', boosting_type='gbdt', max_depth=best_depth, seed=42)
+optimal_model.fit(X_train, y_train)
+
+# LightGBM 내장 Feature Importance 계산 (Gain 기준)
+feature_importance = optimal_model.feature_importances_
+feature_names = X_train.columns
+
+# 중요도 높은 Feature 정렬
+important_features = pd.DataFrame({'Feature': feature_names, 'Importance': feature_importance})
+important_features = important_features.sort_values(by='Importance', ascending=False)
+
+# 전체 Feature Importance 시각화
+plt.figure(figsize=(12, 8))
+plt.barh(important_features['Feature'], important_features['Importance'], color='lightblue')
+plt.xlabel("Feature Importance")
+plt.ylabel("Features")
+plt.title("Feature Importance (LightGBM)")
+plt.gca().invert_yaxis()
+plt.show()
+
+# 상위 15개 Feature 선택
+important_features = important_features.head(15)
+selected_features = important_features['Feature'].tolist()
+
+# 선택된 Feature로 데이터셋 축소
+X_train_selected = X_train[selected_features]
+X_test_selected = X_test[selected_features]
+
+# 선택된 Feature로 최적 max_depth 적용 모델 학습
+selected_model = lgb.LGBMClassifier(objective='binary', metric='binary_error', boosting_type='gbdt', max_depth=best_depth, seed=42)
+selected_model.fit(X_train_selected, y_train)
+
+# 예측 및 성능 평가
+y_pred_selected = (selected_model.predict(X_test_selected) > 0.5).astype(int)
+
+accuracy = accuracy_score(y_test, y_pred_selected)
+precision = precision_score(y_test, y_pred_selected)
+recall = recall_score(y_test, y_pred_selected)
+f1 = f1_score(y_test, y_pred_selected)
+
+print("\n✅ 상위 15개 Feature로 학습된 최적 max_depth 적용 LightGBM 모델 성능")
+print(f"Accuracy: {accuracy:.4f}")
+print(f"Precision: {precision:.4f}")
+print(f"Recall: {recall:.4f}")
+print(f"F1 Score: {f1:.4f}")
+
+# SHAP 분석기 생성
+explainer = shap.Explainer(selected_model, X_train_selected)
+shap_values = explainer(X_test_selected)
+
+# SHAP Value 기반 Feature Weighting 계산
+shap_importance = np.abs(shap_values.values).mean(axis=0)
+shap_weights = shap_importance / np.max(shap_importance)  # 정규화 (0~1 범위)
+
+# Feature Weight 시각화
+plt.figure(figsize=(12, 8))
+plt.barh(selected_features, shap_weights, color='salmon')
+plt.xlabel("Feature Weight (Normalized SHAP Values)")
+plt.ylabel("Features")
+plt.title("SHAP-based Feature Weighting")
+plt.gca().invert_yaxis()
+plt.show()
+
+# Feature Weight 적용하여 데이터 변환
+X_train_weighted = X_train_selected * shap_weights
+X_test_weighted = X_test_selected * shap_weights
+
+# Feature Weighting을 반영한 모델 학습
+weighted_model = lgb.LGBMClassifier(objective='binary', metric='binary_error', boosting_type='gbdt', max_depth=best_depth, seed=42)
+weighted_model.fit(X_train_weighted, y_train)
+
+# 예측 및 성능 평가 (Feature Weighting 적용 모델)
+y_pred_weighted = (weighted_model.predict(X_test_weighted) > 0.5).astype(int)
+
+accuracy_weighted = accuracy_score(y_test, y_pred_weighted)
+precision_weighted = precision_score(y_test, y_pred_weighted)
+recall_weighted = recall_score(y_test, y_pred_weighted)
+f1_weighted = f1_score(y_test, y_pred_weighted)
+
+print("\n✅ SHAP Value 기반 Feature Weighting 적용 LightGBM 모델 성능")
+print(f"Accuracy: {accuracy_weighted:.4f}")
+print(f"Precision: {precision_weighted:.4f}")
+print(f"Recall: {recall_weighted:.4f}")
+print(f"F1 Score: {f1_weighted:.4f}")

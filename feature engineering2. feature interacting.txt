@@ -1,0 +1,110 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import shap
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import LabelEncoder
+from imblearn.over_sampling import SMOTE
+import lightgbm as lgb
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, roc_curve
+
+# 파일 경로
+file_path = "/content/drive/My Drive/Colab Notebooks/appendix_cancer dataset/appendix_cancer_prediction_dataset.csv"
+
+# 데이터 로드
+df = pd.read_csv(file_path)
+
+# 불필요한 열 제거
+df.drop(columns=['Patient_ID'], inplace=True)
+
+# 레이블 인코딩 (범주형 변수 변환)
+label_encoders = {}
+for col in df.select_dtypes(include=['object']).columns:
+    le = LabelEncoder()
+    df[col] = le.fit_transform(df[col])
+    label_encoders[col] = le  # 나중에 해석을 위해 저장
+
+# Feature Interaction 추가 (유지할 Feature만 적용)
+df["Chronic_Severity"] = df["Chronic_Diseases"] * df["Symptom_Severity"]
+
+#  특성과 타겟 분리
+X = df.drop(columns=['Appendix_Cancer_Prediction'])
+y = df['Appendix_Cancer_Prediction']
+
+# 데이터 불균형 해소 (SMOTE 적용)
+smote = SMOTE(random_state=42)
+X_resampled, y_resampled = smote.fit_resample(X, y)
+
+# 학습/테스트 데이터 분할
+X_train, X_test, y_train, y_test = train_test_split(X_resampled, y_resampled, test_size=0.2, random_state=42, stratify=y_resampled)
+
+# 최적 max_depth 찾기
+best_depth = -1
+best_score = 0
+for depth in [3, 5, 7, 10, 15, 20, -1]:
+    temp_model = lgb.LGBMClassifier(objective='binary', metric='binary_error', boosting_type='gbdt', max_depth=depth, seed=42)
+    scores = cross_val_score(temp_model, X_train, y_train, cv=3, scoring='accuracy')
+    mean_score = scores.mean()
+    print(f"max_depth={depth}, Accuracy={mean_score:.4f}")
+    if mean_score > best_score:
+        best_score = mean_score
+        best_depth = depth
+
+print(f"\nOptimal max_depth: {best_depth}")
+
+# 최적 max_depth로 모델 학습
+optimal_model = lgb.LGBMClassifier(objective='binary', metric='binary_error', boosting_type='gbdt', max_depth=best_depth, seed=42)
+optimal_model.fit(X_train, y_train)
+
+# SHAP 기반 Feature Importance 계산
+explainer = shap.Explainer(optimal_model, X_train)
+shap_values = explainer(X_train)
+
+# SHAP 기반 Feature Importance 계산
+shap_importance = np.abs(shap_values.values).mean(axis=0)
+shap_importance_df = pd.DataFrame({'Feature': X_train.columns, 'Importance': shap_importance})
+shap_importance_df = shap_importance_df.sort_values(by='Importance', ascending=False)
+
+# 상위 15개 Feature 선택 (Chronic_Severity는 무조건 포함)
+top_features = ['Chronic_Severity'] + shap_importance_df[shap_importance_df['Feature'] != 'Chronic_Severity'].head(14)['Feature'].tolist()
+
+X_train_selected = X_train[top_features]
+X_test_selected = X_test[top_features]
+
+# 선택된 Feature로 모델 재학습
+selected_model = lgb.LGBMClassifier(objective='binary', metric='binary_error', boosting_type='gbdt', max_depth=best_depth, seed=42)
+selected_model.fit(X_train_selected, y_train)
+
+# 최종 성능 평가
+y_pred_prob_selected = selected_model.predict_proba(X_test_selected)[:, 1]
+y_pred_selected = (y_pred_prob_selected > 0.5).astype(int)
+
+accuracy_selected = accuracy_score(y_test, y_pred_selected)
+precision_selected = precision_score(y_test, y_pred_selected)
+recall_selected = recall_score(y_test, y_pred_selected)
+f1_selected = f1_score(y_test, y_pred_selected)
+auc_selected = roc_auc_score(y_test, y_pred_prob_selected)
+
+print("\n✅ Final Model Performance after SHAP-based Feature Selection")
+print(f"Accuracy: {accuracy_selected:.4f}")
+print(f"Precision: {precision_selected:.4f}")
+print(f"Recall: {recall_selected:.4f}")
+print(f"F1 Score: {f1_selected:.4f}")
+print(f"AUC: {auc_selected:.4f}")
+
+# ROC Curve 시각화
+fpr, tpr, _ = roc_curve(y_test, y_pred_prob_selected)
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='blue', label=f'ROC Curve (AUC = {auc_selected:.4f})')
+plt.plot([0, 1], [0, 1], color='gray', linestyle='--')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Receiver Operating Characteristic (ROC) Curve')
+plt.legend()
+plt.show()
+
+# SHAP Summary Plot 생성
+plt.figure(figsize=(10, 6))
+shap.summary_plot(shap_values, X_train)
+print("To visualize SHAP values, a summary plot was generated to illustrate the contribution of each feature to the model's predictions.")

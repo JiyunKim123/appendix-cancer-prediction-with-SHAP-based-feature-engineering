@@ -1,0 +1,95 @@
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from imblearn.over_sampling import SMOTE
+import lightgbm as lgb
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report
+import matplotlib.pyplot as plt
+
+# 파일 경로
+file_path = "/content/drive/My Drive/Colab Notebooks/appendix_cancer dataset/appendix_cancer_prediction_dataset.csv"
+
+# 데이터 로드
+df = pd.read_csv(file_path)
+
+# 불필요한 열 제거
+df.drop(columns=['Patient_ID'], inplace=True)
+
+# 레이블 인코딩 (범주형 변수 변환)
+label_encoders = {}
+for col in df.select_dtypes(include=['object']).columns:
+    le = LabelEncoder()
+    df[col] = le.fit_transform(df[col])
+    label_encoders[col] = le  # 나중에 해석을 위해 저장
+
+# 특성과 타겟 분리
+X = df.drop(columns=['Appendix_Cancer_Prediction'])
+y = df['Appendix_Cancer_Prediction']
+
+# 데이터 불균형 해소 (SMOTE 적용)
+smote = SMOTE(random_state=42)
+X_resampled, y_resampled = smote.fit_resample(X, y)
+
+# 학습/테스트 데이터 분할
+X_train, X_test, y_train, y_test = train_test_split(X_resampled, y_resampled, test_size=0.2, random_state=42, stratify=y_resampled)
+
+# LightGBM 데이터셋 변환
+train_data = lgb.Dataset(X_train, label=y_train)
+test_data = lgb.Dataset(X_test, label=y_test, reference=train_data)
+
+# LightGBM 파라미터 설정 (불균형 데이터 가중치 적용)
+params = {
+    'objective': 'binary',
+    'metric': 'binary_error',
+    'boosting_type': 'gbdt',
+    'learning_rate': 0.05,
+    'num_leaves': 31,
+    'max_depth': -1,
+    'feature_fraction': 0.8,
+    'bagging_fraction': 0.8,
+    'bagging_freq': 5,
+    'scale_pos_weight': sum(y_train == 0) / sum(y_train == 1),  # 클래스 불균형 보정
+    'seed': 42
+}
+
+# 모델 학습
+num_round = 100
+model = lgb.train(params, train_data, num_boost_round=num_round, valid_sets=[test_data], callbacks=[lgb.early_stopping(10), lgb.log_evaluation(10)])
+
+# 예측
+y_pred_prob = model.predict(X_test)
+y_pred = (y_pred_prob > 0.5).astype(int)
+
+# 평가 지표 계산
+accuracy = accuracy_score(y_test, y_pred)
+precision = precision_score(y_test, y_pred)
+recall = recall_score(y_test, y_pred)
+f1 = f1_score(y_test, y_pred)
+
+# 평가 결과 출력
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred))
+print(f"Accuracy: {accuracy:.4f}")
+print(f"Precision: {precision:.4f}")
+print(f"Recall: {recall:.4f}")
+print(f"F1-score: {f1:.4f}")
+
+# Feature Importance 분석
+feature_importance = model.feature_importance()
+feature_names = X.columns
+sorted_idx = np.argsort(feature_importance)
+
+# 중요도가 0인 피처 제거
+zero_importance_features = [feature_names[i] for i in range(len(feature_importance)) if feature_importance[i] == 0]
+print("\nRemoving Features with Zero Importance:", zero_importance_features)
+X_train = X_train.drop(columns=zero_importance_features)
+X_test = X_test.drop(columns=zero_importance_features)
+
+# Feature Importance 시각화
+plt.figure(figsize=(10, 6))
+plt.barh(range(len(sorted_idx)), feature_importance[sorted_idx], align='center')
+plt.yticks(range(len(sorted_idx)), [feature_names[i] for i in sorted_idx])
+plt.xlabel("Feature Importance")
+plt.title("LightGBM Feature Importance")
+plt.show()
