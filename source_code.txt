@@ -1,0 +1,625 @@
+﻿1. Randomforest baseline
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.preprocessing import LabelEncoder
+from imblearn.over_sampling import SMOTE
+
+# 데이터 로드
+file_path = "/content/drive/My Drive/Colab Notebooks/appendix_cancer dataset/appendix_cancer_prediction_dataset.csv"
+df = pd.read_csv(file_path)
+
+# 데이터 전처리
+# 범주형 특성을 숫자형으로 변환 (Label Encoding)
+for col in df.select_dtypes(include=['object']).columns:
+    le = LabelEncoder()
+    df[col] = le.fit_transform(df[col])
+
+# 결측값 처리 (삭제)
+df = df.dropna()
+
+# 특성(X)과 타겟(y) 분리
+X = df.drop(columns=['Appendix_Cancer_Prediction'])
+y = df['Appendix_Cancer_Prediction']
+
+# 훈련 데이터와 테스트 데이터 분할
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# SMOTE를 사용한 데이터 증강
+smote = SMOTE(random_state=42)
+X_train_resampled, y_train_resampled = smote.fit_resample(X_train, y_train)
+
+# RandomForestClassifier 모델 생성 및 학습
+optimal_depth = 24
+optimal_estimator = 200
+model = RandomForestClassifier(n_estimators=optimal_estimator, max_depth=optimal_depth, random_state=42)
+model.fit(X_train_resampled, y_train_resampled)
+
+# 테스트 데이터로 예측
+y_pred = model.predict(X_test)
+
+# 평가 지표 계산
+accuracy = accuracy_score(y_test, y_pred)
+precision = precision_score(y_test, y_pred)
+recall = recall_score(y_test, y_pred)
+f1 = f1_score(y_test, y_pred)
+
+# 결과 출력
+print(f"Accuracy: {accuracy:.4f}")
+print(f"Precision: {precision:.4f}")
+print(f"Recall: {recall:.4f}")
+print(f"F1 Score: {f1:.4f}")
+
+
+
+2. XGBoost baseline 
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from imblearn.over_sampling import SMOTE
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from xgboost import XGBClassifier
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score,
+    f1_score, roc_auc_score, confusion_matrix
+)
+import shap
+
+# 데이터 로드
+file_path = "/content/drive/My Drive/Colab Notebooks/appendix_cancer dataset/appendix_cancer_prediction_dataset.csv"
+df = pd.read_csv(file_path)
+
+# 데이터 전처리 (결측값 처리)
+df = df.dropna()
+
+# 범주형 변수 Label Encoding 적용
+label_encoders = {}
+categorical_cols = df.select_dtypes(include=['object']).columns
+for col in categorical_cols:
+    le = LabelEncoder()
+    df[col] = le.fit_transform(df[col])
+    label_encoders[col] = le
+
+# Feature Selection - 상관관계 높은 변수 선택
+target_variable = 'Appendix_Cancer_Prediction'
+X = df.drop(columns=[target_variable])
+y = df[target_variable]
+
+# 데이터 불균형 확인
+print("Class Distribution Before SMOTE:")
+print(y.value_counts())
+
+# 데이터 분할
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+# 데이터 증강 (SMOTE 적용)
+smote = SMOTE(random_state=42)
+X_train_resampled, y_train_resampled = smote.fit_resample(X_train, y_train)
+
+# 스케일링 적용 (선택 사항)
+scaler = StandardScaler()
+X_train_resampled = scaler.fit_transform(X_train_resampled)
+X_test = scaler.transform(X_test)
+
+# 데이터 불균형 확인 (SMOTE 적용 후)
+print("\nClass Distribution After SMOTE:")
+print(pd.Series(y_train_resampled).value_counts())
+
+# XGBoost 모델 하이퍼파라미터 튜닝
+param_grid = {
+    'max_depth': [3, 5, 7, 10],
+    'n_estimators': [100, 200, 300, 400, 500]
+}
+
+xgb_model = XGBClassifier(
+    learning_rate=0.1,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    gamma=0.1,
+    reg_lambda=1,
+    random_state=42,
+    use_label_encoder=False,
+    eval_metric='logloss'
+)
+
+grid_search = GridSearchCV(xgb_model, param_grid, cv=3, scoring='accuracy', n_jobs=-1)
+grid_search.fit(X_train_resampled, y_train_resampled)
+
+# 최적 하이퍼파라미터 출력
+best_params = grid_search.best_params_
+print(f"Best max_depth: {best_params['max_depth']}")
+print(f"Best n_estimators: {best_params['n_estimators']}")
+
+# 최적 하이퍼파라미터로 모델 학습
+xgb_best_model = XGBClassifier(
+    max_depth=best_params['max_depth'],
+    n_estimators=best_params['n_estimators'],
+    learning_rate=0.1,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    gamma=0.1,
+    reg_lambda=1,
+    random_state=42,
+    use_label_encoder=False,
+    eval_metric='logloss'
+)
+xgb_best_model.fit(X_train_resampled, y_train_resampled)
+y_pred_xgb = xgb_best_model.predict(X_test)
+
+# 성능 평가 함수
+def evaluate_model(y_test, y_pred, model_name):
+    acc = accuracy_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred)
+    recall = recall_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred)
+    roc_auc = roc_auc_score(y_test, y_pred)
+
+    print(f"\n{model_name} Metrics:")
+    print(f"  Accuracy: {acc:.4f}")
+    print(f"  Precision: {precision:.4f}")
+    print(f"  Recall: {recall:.4f}")
+    print(f"  F1-score: {f1:.4f}")
+    print(f"  ROC-AUC: {roc_auc:.4f}")
+
+# 최적 모델 평가
+evaluate_model(y_test, y_pred_xgb, "XGBoost (Tuned)")
+
+# Confusion Matrix 시각화
+plt.figure(figsize=(6, 5))
+sns.heatmap(confusion_matrix(y_test, y_pred_xgb), annot=True, fmt='d', cmap='Blues')
+plt.xlabel('Predicted Label')
+plt.ylabel('True Label')
+plt.title('Confusion Matrix')
+plt.show()
+
+# SHAP 분석 (특성 중요도 시각화)
+explainer = shap.Explainer(xgb_best_model)
+shap_values = explainer(X_test)
+
+shap.summary_plot(shap_values, X_test)
+
+3. LightGBM baseline 
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from imblearn.over_sampling import SMOTE
+import lightgbm as lgb
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report
+import matplotlib.pyplot as plt
+
+# 파일 경로
+file_path = "/content/drive/My Drive/Colab Notebooks/appendix_cancer dataset/appendix_cancer_prediction_dataset.csv"
+
+# 데이터 로드
+df = pd.read_csv(file_path)
+
+# 불필요한 열 제거
+df.drop(columns=['Patient_ID'], inplace=True)
+
+# 레이블 인코딩 (범주형 변수 변환)
+label_encoders = {}
+for col in df.select_dtypes(include=['object']).columns:
+    le = LabelEncoder()
+    df[col] = le.fit_transform(df[col])
+    label_encoders[col] = le  # 나중에 해석을 위해 저장
+
+# 특성과 타겟 분리
+X = df.drop(columns=['Appendix_Cancer_Prediction'])
+y = df['Appendix_Cancer_Prediction']
+
+# 데이터 불균형 해소 (SMOTE 적용)
+smote = SMOTE(random_state=42)
+X_resampled, y_resampled = smote.fit_resample(X, y)
+
+# 학습/테스트 데이터 분할
+X_train, X_test, y_train, y_test = train_test_split(X_resampled, y_resampled, test_size=0.2, random_state=42, stratify=y_resampled)
+
+# LightGBM 데이터셋 변환
+train_data = lgb.Dataset(X_train, label=y_train)
+test_data = lgb.Dataset(X_test, label=y_test, reference=train_data)
+
+# LightGBM 파라미터 설정 (불균형 데이터 가중치 적용)
+params = {
+    'objective': 'binary',
+    'metric': 'binary_error',
+    'boosting_type': 'gbdt',
+    'learning_rate': 0.05,
+    'num_leaves': 31,
+    'max_depth': -1,
+    'feature_fraction': 0.8,
+    'bagging_fraction': 0.8,
+    'bagging_freq': 5,
+    'scale_pos_weight': sum(y_train == 0) / sum(y_train == 1),  # 클래스 불균형 보정
+    'seed': 42
+}
+
+# 모델 학습
+num_round = 100
+model = lgb.train(params, train_data, num_boost_round=num_round, valid_sets=[test_data], callbacks=[lgb.early_stopping(10), lgb.log_evaluation(10)])
+
+# 예측
+y_pred_prob = model.predict(X_test)
+y_pred = (y_pred_prob > 0.5).astype(int)
+
+# 평가 지표 계산
+accuracy = accuracy_score(y_test, y_pred)
+precision = precision_score(y_test, y_pred)
+recall = recall_score(y_test, y_pred)
+f1 = f1_score(y_test, y_pred)
+
+# 평가 결과 출력
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred))
+print(f"Accuracy: {accuracy:.4f}")
+print(f"Precision: {precision:.4f}")
+print(f"Recall: {recall:.4f}")
+print(f"F1-score: {f1:.4f}")
+
+# Feature Importance 분석
+feature_importance = model.feature_importance()
+feature_names = X.columns
+sorted_idx = np.argsort(feature_importance)
+
+# 중요도가 0인 피처 제거
+zero_importance_features = [feature_names[i] for i in range(len(feature_importance)) if feature_importance[i] == 0]
+print("\nRemoving Features with Zero Importance:", zero_importance_features)
+X_train = X_train.drop(columns=zero_importance_features)
+X_test = X_test.drop(columns=zero_importance_features)
+
+# Feature Importance 시각화
+plt.figure(figsize=(10, 6))
+plt.barh(range(len(sorted_idx)), feature_importance[sorted_idx], align='center')
+plt.yticks(range(len(sorted_idx)), [feature_names[i] for i in sorted_idx])
+plt.xlabel("Feature Importance")
+plt.title("LightGBM Feature Importance")
+plt.show()
+
+4. LightGBM feature selecting 
+mport pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from imblearn.over_sampling import SMOTE
+import lightgbm as lgb
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report
+import matplotlib.pyplot as plt
+from sklearn.model_selection import cross_val_score
+import shap
+
+# 파일 경로
+file_path = "/content/drive/My Drive/Colab Notebooks/appendix_cancer dataset/appendix_cancer_prediction_dataset.csv"
+
+# 데이터 로드
+df = pd.read_csv(file_path)
+
+# 불필요한 열 제거
+df.drop(columns=['Patient_ID'], inplace=True)
+
+# 레이블 인코딩 (범주형 변수 변환)
+label_encoders = {}
+for col in df.select_dtypes(include=['object']).columns:
+    le = LabelEncoder()
+    df[col] = le.fit_transform(df[col])
+    label_encoders[col] = le  # 나중에 해석을 위해 저장
+
+# 특성과 타겟 분리
+X = df.drop(columns=['Appendix_Cancer_Prediction'])
+y = df['Appendix_Cancer_Prediction']
+
+# 데이터 불균형 해소 (SMOTE 적용)
+smote = SMOTE(random_state=42)
+X_resampled, y_resampled = smote.fit_resample(X, y)
+
+# 학습/테스트 데이터 분할
+X_train, X_test, y_train, y_test = train_test_split(X_resampled, y_resampled, test_size=0.2, random_state=42, stratify=y_resampled)
+
+# 최적 max_depth 찾기
+best_depth = -1
+best_score = 0
+for depth in [3, 5, 7, 10, 15, 20, -1]:
+    temp_model = lgb.LGBMClassifier(objective='binary', metric='binary_error', boosting_type='gbdt', max_depth=depth, seed=42)
+    scores = cross_val_score(temp_model, X_train, y_train, cv=3, scoring='accuracy')
+    mean_score = scores.mean()
+    print(f"max_depth={depth}, Accuracy={mean_score:.4f}")
+    if mean_score > best_score:
+        best_score = mean_score
+        best_depth = depth
+
+print(f"\nOptimal max_depth: {best_depth}")
+
+# 최적 max_depth를 반영하여 모델 학습
+best_model = lgb.LGBMClassifier(objective='binary', metric='binary_error', boosting_type='gbdt', max_depth=best_depth, seed=42)
+best_model.fit(X_train, y_train, eval_set=[(X_test, y_test)], callbacks=[lgb.early_stopping(10), lgb.log_evaluation(10)])
+
+# SHAP 분석 추가
+explainer = shap.Explainer(best_model, X_train)
+shap_values = explainer(X_test)
+
+# SHAP Summary Plot
+shap.summary_plot(shap_values, X_test)
+
+# SHAP 값을 기반으로 상위 15개 feature 선택
+shap_importance = np.abs(shap_values.values).mean(axis=0)
+top_15_features = X_train.columns[np.argsort(shap_importance)[-15:]]
+print("\nTop 15 Features Based on SHAP:", top_15_features.tolist())
+
+# 상위 15개 feature만 선택하여 데이터 재구성
+X_train_top15 = X_train[top_15_features]
+X_test_top15 = X_test[top_15_features]
+
+# 최적 max_depth로 다시 모델 학습 (상위 15개 feature만 사용)
+best_model.fit(X_train_top15, y_train, eval_set=[(X_test_top15, y_test)], callbacks=[lgb.early_stopping(10), lgb.log_evaluation(10)])
+
+# 예측
+y_pred_prob = best_model.predict_proba(X_test_top15)[:, 1]
+y_pred = (y_pred_prob > 0.5).astype(int)
+
+# 평가 지표 계산
+accuracy = accuracy_score(y_test, y_pred)
+precision = precision_score(y_test, y_pred)
+recall = recall_score(y_test, y_pred)
+f1 = f1_score(y_test, y_pred)
+
+# 평가 결과 출력
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred))
+print(f"Accuracy: {accuracy:.4f}")
+print(f"Precision: {precision:.4f}")
+print(f"Recall: {recall:.4f}")
+print(f"F1-score: {f1:.4f}")
+
+5. LightGBM feature interacting
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import shap
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import LabelEncoder
+from imblearn.over_sampling import SMOTE
+import lightgbm as lgb
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, roc_curve
+
+# 파일 경로
+file_path = "/content/drive/My Drive/Colab Notebooks/appendix_cancer dataset/appendix_cancer_prediction_dataset.csv"
+
+# 데이터 로드
+df = pd.read_csv(file_path)
+
+# 불필요한 열 제거
+df.drop(columns=['Patient_ID'], inplace=True)
+
+# 레이블 인코딩 (범주형 변수 변환)
+label_encoders = {}
+for col in df.select_dtypes(include=['object']).columns:
+    le = LabelEncoder()
+    df[col] = le.fit_transform(df[col])
+    label_encoders[col] = le  # 나중에 해석을 위해 저장
+
+# Feature Interaction 추가 (유지할 Feature만 적용)
+df["Chronic_Severity"] = df["Chronic_Diseases"] * df["Symptom_Severity"]
+
+#  특성과 타겟 분리
+X = df.drop(columns=['Appendix_Cancer_Prediction'])
+y = df['Appendix_Cancer_Prediction']
+
+# 데이터 불균형 해소 (SMOTE 적용)
+smote = SMOTE(random_state=42)
+X_resampled, y_resampled = smote.fit_resample(X, y)
+
+# 학습/테스트 데이터 분할
+X_train, X_test, y_train, y_test = train_test_split(X_resampled, y_resampled, test_size=0.2, random_state=42, stratify=y_resampled)
+
+# 최적 max_depth 찾기
+best_depth = -1
+best_score = 0
+for depth in [3, 5, 7, 10, 15, 20, -1]:
+    temp_model = lgb.LGBMClassifier(objective='binary', metric='binary_error', boosting_type='gbdt', max_depth=depth, seed=42)
+    scores = cross_val_score(temp_model, X_train, y_train, cv=3, scoring='accuracy')
+    mean_score = scores.mean()
+    print(f"max_depth={depth}, Accuracy={mean_score:.4f}")
+    if mean_score > best_score:
+        best_score = mean_score
+        best_depth = depth
+
+print(f"\nOptimal max_depth: {best_depth}")
+
+# 최적 max_depth로 모델 학습
+optimal_model = lgb.LGBMClassifier(objective='binary', metric='binary_error', boosting_type='gbdt', max_depth=best_depth, seed=42)
+optimal_model.fit(X_train, y_train)
+
+# SHAP 기반 Feature Importance 계산
+explainer = shap.Explainer(optimal_model, X_train)
+shap_values = explainer(X_train)
+
+# SHAP 기반 Feature Importance 계산
+shap_importance = np.abs(shap_values.values).mean(axis=0)
+shap_importance_df = pd.DataFrame({'Feature': X_train.columns, 'Importance': shap_importance})
+shap_importance_df = shap_importance_df.sort_values(by='Importance', ascending=False)
+
+# 상위 15개 Feature 선택 (Chronic_Severity는 무조건 포함)
+top_features = ['Chronic_Severity'] + shap_importance_df[shap_importance_df['Feature'] != 'Chronic_Severity'].head(14)['Feature'].tolist()
+
+X_train_selected = X_train[top_features]
+X_test_selected = X_test[top_features]
+
+# 선택된 Feature로 모델 재학습
+selected_model = lgb.LGBMClassifier(objective='binary', metric='binary_error', boosting_type='gbdt', max_depth=best_depth, seed=42)
+selected_model.fit(X_train_selected, y_train)
+
+# 최종 성능 평가
+y_pred_prob_selected = selected_model.predict_proba(X_test_selected)[:, 1]
+y_pred_selected = (y_pred_prob_selected > 0.5).astype(int)
+
+accuracy_selected = accuracy_score(y_test, y_pred_selected)
+precision_selected = precision_score(y_test, y_pred_selected)
+recall_selected = recall_score(y_test, y_pred_selected)
+f1_selected = f1_score(y_test, y_pred_selected)
+auc_selected = roc_auc_score(y_test, y_pred_prob_selected)
+
+print("\n✅ Final Model Performance after SHAP-based Feature Selection")
+print(f"Accuracy: {accuracy_selected:.4f}")
+print(f"Precision: {precision_selected:.4f}")
+print(f"Recall: {recall_selected:.4f}")
+print(f"F1 Score: {f1_selected:.4f}")
+print(f"AUC: {auc_selected:.4f}")
+
+# ROC Curve 시각화
+fpr, tpr, _ = roc_curve(y_test, y_pred_prob_selected)
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='blue', label=f'ROC Curve (AUC = {auc_selected:.4f})')
+plt.plot([0, 1], [0, 1], color='gray', linestyle='--')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Receiver Operating Characteristic (ROC) Curve')
+plt.legend()
+plt.show()
+
+# SHAP Summary Plot 생성
+plt.figure(figsize=(10, 6))
+shap.summary_plot(shap_values, X_train)
+print("To visualize SHAP values, a summary plot was generated to illustrate the contribution of each feature to the model's predictions.")
+
+
+6. LightGBM feature weighting
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import shap
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import LabelEncoder
+from imblearn.over_sampling import SMOTE
+import lightgbm as lgb
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+# 📌 1️⃣ 파일 경로
+file_path = "/content/drive/My Drive/Colab Notebooks/appendix_cancer dataset/appendix_cancer_prediction_dataset.csv"
+
+# 📌 2️⃣ 데이터 로드
+df = pd.read_csv(file_path)
+
+# 불필요한 열 제거
+df.drop(columns=['Patient_ID'], inplace=True)
+
+# 📌 3️⃣ 레이블 인코딩 (범주형 변수 변환)
+label_encoders = {}
+for col in df.select_dtypes(include=['object']).columns:
+    le = LabelEncoder()
+    df[col] = le.fit_transform(df[col])
+    label_encoders[col] = le  # 나중에 해석을 위해 저장
+
+# 📌 4️⃣ 특성과 타겟 분리
+X = df.drop(columns=['Appendix_Cancer_Prediction'])
+y = df['Appendix_Cancer_Prediction']
+
+# 📌 5️⃣ 데이터 불균형 해소 (SMOTE 적용)
+smote = SMOTE(random_state=42)
+X_resampled, y_resampled = smote.fit_resample(X, y)
+
+# 📌 6️⃣ 학습/테스트 데이터 분할
+X_train, X_test, y_train, y_test = train_test_split(X_resampled, y_resampled, test_size=0.2, random_state=42, stratify=y_resampled)
+
+# 📌 7️⃣ 최적 max_depth 찾기
+best_depth = -1
+best_score = 0
+for depth in [3, 5, 7, 10, 15, 20, -1]:
+    temp_model = lgb.LGBMClassifier(objective='binary', metric='binary_error', boosting_type='gbdt', max_depth=depth, seed=42)
+    scores = cross_val_score(temp_model, X_train, y_train, cv=3, scoring='accuracy')
+    mean_score = scores.mean()
+    print(f"max_depth={depth}, Accuracy={mean_score:.4f}")
+    if mean_score > best_score:
+        best_score = mean_score
+        best_depth = depth
+
+print(f"\nOptimal max_depth: {best_depth}")
+
+# 📌 8️⃣ 최적 max_depth로 모델 학습
+optimal_model = lgb.LGBMClassifier(objective='binary', metric='binary_error', boosting_type='gbdt', max_depth=best_depth, seed=42)
+optimal_model.fit(X_train, y_train)
+
+# 📌 9️⃣ LightGBM 내장 Feature Importance 계산 (Gain 기준)
+feature_importance = optimal_model.feature_importances_
+feature_names = X_train.columns
+
+# 중요도 높은 Feature 정렬
+important_features = pd.DataFrame({'Feature': feature_names, 'Importance': feature_importance})
+important_features = important_features.sort_values(by='Importance', ascending=False)
+
+# 📌 전체 Feature Importance 시각화
+plt.figure(figsize=(12, 8))
+plt.barh(important_features['Feature'], important_features['Importance'], color='lightblue')
+plt.xlabel("Feature Importance")
+plt.ylabel("Features")
+plt.title("Feature Importance (LightGBM)")
+plt.gca().invert_yaxis()
+plt.show()
+
+# 📌 상위 15개 Feature 선택
+important_features = important_features.head(15)
+selected_features = important_features['Feature'].tolist()
+
+# 📌 🔟 선택된 Feature로 데이터셋 축소
+X_train_selected = X_train[selected_features]
+X_test_selected = X_test[selected_features]
+
+# 📌 1️⃣1️⃣ 선택된 Feature로 최적 max_depth 적용 모델 학습
+selected_model = lgb.LGBMClassifier(objective='binary', metric='binary_error', boosting_type='gbdt', max_depth=best_depth, seed=42)
+selected_model.fit(X_train_selected, y_train)
+
+# 📌 1️⃣2️⃣ 예측 및 성능 평가
+y_pred_selected = (selected_model.predict(X_test_selected) > 0.5).astype(int)
+
+accuracy = accuracy_score(y_test, y_pred_selected)
+precision = precision_score(y_test, y_pred_selected)
+recall = recall_score(y_test, y_pred_selected)
+f1 = f1_score(y_test, y_pred_selected)
+
+print("\n✅ 상위 15개 Feature로 학습된 최적 max_depth 적용 LightGBM 모델 성능")
+print(f"Accuracy: {accuracy:.4f}")
+print(f"Precision: {precision:.4f}")
+print(f"Recall: {recall:.4f}")
+print(f"F1 Score: {f1:.4f}")
+
+# 📌 1️⃣3️⃣ SHAP 분석기 생성
+explainer = shap.Explainer(selected_model, X_train_selected)
+shap_values = explainer(X_test_selected)
+
+# 📌 1️⃣4️⃣ SHAP Value 기반 Feature Weighting 계산
+shap_importance = np.abs(shap_values.values).mean(axis=0)
+shap_weights = shap_importance / np.max(shap_importance)  # 정규화 (0~1 범위)
+
+# 📌 1️⃣5️⃣ Feature Weight 시각화
+plt.figure(figsize=(12, 8))
+plt.barh(selected_features, shap_weights, color='salmon')
+plt.xlabel("Feature Weight (Normalized SHAP Values)")
+plt.ylabel("Features")
+plt.title("SHAP-based Feature Weighting")
+plt.gca().invert_yaxis()
+plt.show()
+
+# 📌 1️⃣6️⃣ Feature Weight 적용하여 데이터 변환
+X_train_weighted = X_train_selected * shap_weights
+X_test_weighted = X_test_selected * shap_weights
+
+# 📌 1️⃣7️⃣ Feature Weighting을 반영한 모델 학습
+weighted_model = lgb.LGBMClassifier(objective='binary', metric='binary_error', boosting_type='gbdt', max_depth=best_depth, seed=42)
+weighted_model.fit(X_train_weighted, y_train)
+
+# 📌 1️⃣8️⃣ 예측 및 성능 평가 (Feature Weighting 적용 모델)
+y_pred_weighted = (weighted_model.predict(X_test_weighted) > 0.5).astype(int)
+
+accuracy_weighted = accuracy_score(y_test, y_pred_weighted)
+precision_weighted = precision_score(y_test, y_pred_weighted)
+recall_weighted = recall_score(y_test, y_pred_weighted)
+f1_weighted = f1_score(y_test, y_pred_weighted)
+
+print("\n✅ SHAP Value 기반 Feature Weighting 적용 LightGBM 모델 성능")
+print(f"Accuracy: {accuracy_weighted:.4f}")
+print(f"Precision: {precision_weighted:.4f}")
+print(f"Recall: {recall_weighted:.4f}")
+print(f"F1 Score: {f1_weighted:.4f}")
+
